@@ -4,4 +4,22 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "matplotlib>=3.10.7",
+    "opencv-contrib-python>=4.12.0.88",
+    "opencv-python>=4.12.0.88",
+    "pycocotools>=2.0.10",
+    "pytest>=8.4.2",
+    "pyyaml>=6.0.3",
+    "torch>=2.9.0",
+    "torchvision>=0.24.0",
+    "tqdm>=4.67.1",
+    "ultralytics>=8.3.223",
+    "albumentations>=1.4.17",
+    "pytest>=8.3.3",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests as integration (deselect with '-m \"not integration\"')",
+]

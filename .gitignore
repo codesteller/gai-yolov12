@@ -6,5 +6,20 @@ dist/
 wheels/
 *.egg-info
 
+# Output folders 
+tests/__pycache__/
+tests/test_output/
+
 # Virtual environments
 .venv
+
+# image files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.svg   
+
+

@@ -1,0 +1,73 @@
+dataset:
+  name: "BDD100K"
+  root_dir: "/mnt/team-share/Datasets/bdd-datasets/BDD/bdd_100k/"
+  train_split: "images/100k/train/"
+  val_split: "images/100k/val/"
+  test_split: "images/100k/test/"
+  train_ann_file: "labels/bdd100k_labels_images_train.json"
+  val_ann_file: "labels/bdd100k_labels_images_val.json"
+  test_ann_file: "labels/bdd100k_labels_images_test.json"
+  convert_to_coco: true
+  export_coco_path: "/mnt/team-share/Datasets/bdd-datasets/BDD/bdd_100k/coco_format/"
+
+experiment:
+  name: "GAI-YOLOv12-Experiment-001"
+  description: "Experimenting with GAI-YOLOv12 on BDD100K"
+  num_epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  artifact_dir: "./experiments/gai-yolo12-bdd100k/"
+
+dataloader:
+  batch_size: 16
+  num_workers: 4
+  pin_memory: true
+  augmentation: true
+  augmentation_strategies:
+    - "RandomHorizontalFlip"
+    - "RandomCrop"
+    - "ColorJitter"
+    - "NoiseInjection"
+    - "RandomRotation"
+    - "Cutout"
+    - "MixUp"
+    - "CutMix"
+    - "MotionBlur"
+  augmentation_probabilities_per_batch: 0.4  # 40% of the batch will have augmentations applied randomly
+  augmentations:
+    - type: "RandomHorizontalFlip"
+      probability: 0.5
+    - type: "RandomCrop"
+      size: [600, 600]
+    - type: "ColorJitter"
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+    - type: "NoiseInjection"
+      mean: 0
+      std: 0.05
+      p: 0.5
+    - type: "RandomRotation"
+      degrees: 10
+      fill: "black"
+    - type: "Cutout"
+      num_holes: 1
+      max_h_size: 50
+      max_w_size: 50
+      fill_value: 0
+    - type: "MixUp"
+      alpha: 0.4
+      p: 0.5
+    - type: "CutMix"
+      alpha: 1.0
+      p: 0.5
+    - type: "MotionBlur"
+      kernel_size: 5
+      p: 0.3
+
+model:
+  name: "gai-yolo12"
+  pretrained: true
+  num_classes: 10
+  input_size: [640, 640]

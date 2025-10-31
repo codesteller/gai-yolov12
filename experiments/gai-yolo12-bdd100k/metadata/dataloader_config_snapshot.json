@@ -1,0 +1,25 @@
+{
+  "batch_size": 16,
+  "num_workers": 0,
+  "pin_memory": false,
+  "augmentation": true,
+  "augmentation_strategies": [
+    "RandomHorizontalFlip",
+    "RandomCrop",
+    "ColorJitter",
+    "NoiseInjection",
+    "RandomRotation",
+    "Cutout",
+    "MixUp",
+    "CutMix",
+    "MotionBlur"
+  ],
+  "augmentation_probabilities_per_batch": 1.0,
+  "augmentations": [
+    {
+      "type": "MotionBlur",
+      "kernel_size": 5,
+      "p": 1.0
+    }
+  ]
+}
