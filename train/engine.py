@@ -10,11 +10,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
-import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 from torch import nn
@@ -84,117 +84,162 @@ class EpochMetrics:
 class TrainingResult:
     metrics: List[EpochMetrics]
     checkpoints: List[Path]
+    summary_path: Optional[Path] = None
 
 
 class YoloGridAssigner:
-    """Assigns targets to anchors using a grid-based heuristic similar to YOLO."""
+    """Anchor-aware assigner that mirrors YOLO's multi-scale target encoding."""
 
-    def __call__(self, outputs: Dict[str, torch.Tensor], targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        num_anchors = int(outputs.get("pred_logits", torch.empty(0, 1, 1)).shape[1])
-        grid_h, grid_w = _resolve_feature_map_shape(outputs)
+    def __init__(self, iou_threshold: float = 0.25) -> None:
+        self.iou_threshold = float(iou_threshold)
+
+    def __call__(self, outputs: Dict[str, Any], targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        predictions = outputs.get("predictions")
+        anchors = outputs.get("anchors")
+        feature_shapes = outputs.get("feature_shapes")
+        strides = outputs.get("strides")
+        if predictions is None or anchors is None or feature_shapes is None or strides is None:
+            raise ValueError("Model outputs must include predictions, anchors, feature_shapes, and strides")
+
+        anchor_groups = [torch.as_tensor(anchor, dtype=torch.float32).cpu() for anchor in anchors]
+        feature_dims: List[Tuple[int, int]] = [
+            (int(shape[0]), int(shape[1])) for shape in feature_shapes
+        ]
+        strides_tensor = torch.as_tensor(list(strides), dtype=torch.float32)
+
+        if len(predictions) != len(anchor_groups):
+            raise ValueError("Mismatch between predictions and anchor groups")
+
         assigned_targets: List[Dict[str, Any]] = []
-
         for target in targets:
-            assigned_targets.append(self._assign_single(target, num_anchors, grid_h, grid_w))
+            assigned_targets.append(
+                self._assign_single(target, anchor_groups, feature_dims, strides_tensor)
+            )
         return assigned_targets
 
     def _assign_single(
         self,
         target: Dict[str, Any],
-        num_anchors: int,
-        grid_h: int,
-        grid_w: int,
+        anchors: Sequence[torch.Tensor],
+        feature_shapes: Sequence[Tuple[int, int]],
+        strides: torch.Tensor,
     ) -> Dict[str, Any]:
+        assigned = dict(target)
+        defaults = {
+            "assigned_scales": [],
+            "assigned_anchors": [],
+            "assigned_grid_xy": [],
+            "assigned_boxes": [],
+            "assigned_labels": [],
+        }
+
         boxes = target.get("boxes")
         labels = target.get("labels")
-        assigned = dict(target)
-
-        if boxes is None or labels is None or grid_h == 0 or grid_w == 0:
-            assigned.update(
-                {
-                    "assigned_anchors": [],
-                    "assigned_labels": [],
-                    "assigned_boxes": [],
-                }
-            )
+        if boxes is None or labels is None:
+            assigned.update(defaults)
             return assigned
 
         boxes_tensor = _to_float_tensor(boxes)
         labels_tensor = _to_long_tensor(labels)
-        if boxes_tensor.numel() == 0 or labels_tensor.numel() == 0:
-            assigned.update(
-                {
-                    "assigned_anchors": [],
-                    "assigned_labels": [],
-                    "assigned_boxes": [],
-                }
-            )
+        limit = min(boxes_tensor.shape[0], labels_tensor.numel())
+        if limit == 0:
+            assigned.update(defaults)
             return assigned
 
-        img_h, img_w = _resolve_image_size(target)
-        total_cells = max(1, grid_h * grid_w)
-        occupied: set[int] = set()
-        anchor_indices: List[int] = []
+        image_h, image_w = _resolve_image_size(target)
+        image_h = max(image_h, 1.0)
+        image_w = max(image_w, 1.0)
+
+        positives: set[Tuple[int, int, int, int]] = set()
+        assigned_scales: List[int] = []
+        assigned_anchors: List[int] = []
+        assigned_grid_xy: List[List[int]] = []
         assigned_boxes: List[List[float]] = []
         assigned_labels: List[int] = []
 
-        order = torch.argsort(_box_area(boxes_tensor), descending=True)
-        for raw_idx in order.tolist():
-            if raw_idx >= boxes_tensor.shape[0]:
-                continue
-            center_x, center_y = _box_center(boxes_tensor[raw_idx])
-            col = int(center_x / max(img_w, 1e-6) * grid_w)
-            row = int(center_y / max(img_h, 1e-6) * grid_h)
-            col = max(0, min(grid_w - 1, col))
-            row = max(0, min(grid_h - 1, row))
-            primary_idx = row * grid_w + col
-            anchor_idx = self._find_available_slot(primary_idx, occupied, total_cells)
-            if anchor_idx is None or anchor_idx >= num_anchors:
-                continue
-            occupied.add(anchor_idx)
-            anchor_indices.append(anchor_idx)
-            assigned_labels.append(int(labels_tensor[raw_idx].item()))
-            assigned_boxes.append(boxes_tensor[raw_idx].tolist())
+        for idx in range(limit):
+            x1, y1, x2, y2 = [float(value) for value in boxes_tensor[idx].tolist()[:4]]
+            label = int(labels_tensor[idx].item())
+            width = max(x2 - x1, 1e-6)
+            height = max(y2 - y1, 1e-6)
+            center_x = (x1 + x2) * 0.5
+            center_y = (y1 + y2) * 0.5
 
-        assigned.update(
+            anchor_candidates = self._select_anchor_candidates(width, height, anchors)
+            if not anchor_candidates:
+                continue
+
+            for scale_idx, anchor_idx in anchor_candidates:
+                if scale_idx >= len(feature_shapes):
+                    continue
+                grid_h, grid_w = feature_shapes[scale_idx]
+                if grid_h <= 0 or grid_w <= 0:
+                    continue
+                gx = int(center_x / image_w * grid_w)
+                gy = int(center_y / image_h * grid_h)
+                gx = max(0, min(grid_w - 1, gx))
+                gy = max(0, min(grid_h - 1, gy))
+
+                key = (scale_idx, anchor_idx, gy, gx)
+                if key in positives:
+                    continue
+                positives.add(key)
+
+                assigned_scales.append(int(scale_idx))
+                assigned_anchors.append(int(anchor_idx))
+                assigned_grid_xy.append([int(gy), int(gx)])
+                assigned_boxes.append([x1, y1, x2, y2])
+                assigned_labels.append(label)
+
+        defaults.update(
             {
-                "assigned_anchors": anchor_indices,
-                "assigned_labels": assigned_labels,
+                "assigned_scales": assigned_scales,
+                "assigned_anchors": assigned_anchors,
+                "assigned_grid_xy": assigned_grid_xy,
                 "assigned_boxes": assigned_boxes,
+                "assigned_labels": assigned_labels,
             }
         )
+        assigned.update(defaults)
         return assigned
 
+    def _select_anchor_candidates(
+        self,
+        width: float,
+        height: float,
+        anchors: Sequence[torch.Tensor],
+    ) -> List[Tuple[int, int]]:
+        candidates: List[Tuple[float, int, int]] = []
+        for scale_idx, anchor_group in enumerate(anchors):
+            if anchor_group.numel() == 0:
+                continue
+            ious = self._compute_anchor_iou(width, height, anchor_group)
+            for anchor_idx, iou_value in enumerate(ious.tolist()):
+                candidates.append((float(iou_value), scale_idx, anchor_idx))
+
+        if not candidates:
+            return []
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        selected: List[Tuple[int, int]] = []
+        for iou_value, scale_idx, anchor_idx in candidates:
+            if iou_value >= self.iou_threshold or not selected:
+                selected.append((scale_idx, anchor_idx))
+            else:
+                break
+        return selected
+
     @staticmethod
-    def _find_available_slot(primary_idx: int, occupied: set[int], total_cells: int) -> Optional[int]:
-        if primary_idx not in occupied:
-            return primary_idx
-        for offset in range(total_cells):
-            candidate = (primary_idx + offset) % total_cells
-            if candidate not in occupied:
-                return candidate
-        return None
-
-
-def _resolve_feature_map_shape(outputs: Dict[str, torch.Tensor]) -> tuple[int, int]:
-    shape = outputs.get("feature_map_shape")
-    if isinstance(shape, torch.Tensor):
-        shape_values = shape.detach().cpu().view(-1).tolist()
-        if len(shape_values) >= 2:
-            return int(shape_values[0]), int(shape_values[1])
-    elif isinstance(shape, (list, tuple)) and len(shape) >= 2:
-        return int(shape[0]), int(shape[1])
-
-    logits = outputs.get("pred_logits")
-    if logits is None:
-        return 0, 0
-    num_anchors = int(logits.shape[1])
-    if num_anchors == 0:
-        return 0, 0
-    grid_size = int(math.sqrt(num_anchors))
-    if grid_size * grid_size == num_anchors:
-        return grid_size, grid_size
-    return num_anchors, 1
+    def _compute_anchor_iou(width: float, height: float, anchor_group: torch.Tensor) -> torch.Tensor:
+        if width <= 0.0 or height <= 0.0 or anchor_group.numel() == 0:
+            return torch.zeros(anchor_group.shape[0], dtype=torch.float32)
+        box = anchor_group.new_tensor([width, height])
+        inter = torch.minimum(box, anchor_group)
+        inter_area = inter[:, 0] * inter[:, 1]
+        box_area = width * height
+        anchor_area = anchor_group[:, 0] * anchor_group[:, 1]
+        union = box_area + anchor_area - inter_area + 1e-9
+        return inter_area / union
 
 
 def _to_float_tensor(value: Any) -> torch.Tensor:
@@ -222,23 +267,6 @@ def _resolve_image_size(target: Dict[str, Any]) -> tuple[float, float]:
     return 1.0, 1.0
 
 
-def _box_area(boxes: torch.Tensor) -> torch.Tensor:
-    if boxes.ndim == 1:
-        boxes = boxes.view(1, -1)
-    widths = (boxes[:, 2] - boxes[:, 0]).clamp(min=0.0)
-    heights = (boxes[:, 3] - boxes[:, 1]).clamp(min=0.0)
-    return widths * heights
-
-
-def _box_center(box: torch.Tensor) -> tuple[float, float]:
-    if box.ndim != 1 or box.numel() < 4:
-        raise ValueError("Bounding box tensor must be 1-D with four elements")
-    x1, y1, x2, y2 = box.tolist()[:4]
-    cx = (x1 + x2) / 2.0
-    cy = (y1 + y2) / 2.0
-    return float(cx), float(cy)
-
-
 class Trainer:
     """Orchestrates the training and evaluation loops."""
 
@@ -263,7 +291,7 @@ class Trainer:
         train_loader = self.dataloaders.get("train")
         if train_loader is None:
             LOGGER.warning("No training dataloader available; aborting training")
-            return TrainingResult(metrics=[], checkpoints=[])
+            return TrainingResult(metrics=[], checkpoints=[], summary_path=None)
 
         metrics: List[EpochMetrics] = []
         checkpoint_paths: List[Path] = []
@@ -279,7 +307,8 @@ class Trainer:
             if epoch % self.config.checkpoint_interval == 0:
                 checkpoint_paths.append(self._save_checkpoint(epoch, train_loss, val_loss))
 
-        return TrainingResult(metrics=metrics, checkpoints=checkpoint_paths)
+            summary_path = self._persist_epoch_metrics(metrics)
+            return TrainingResult(metrics=metrics, checkpoints=checkpoint_paths, summary_path=summary_path)
 
     def _train_epoch(self, loader: DataLoader, epoch: int) -> float:
         self.model.train()
@@ -352,6 +381,22 @@ class Trainer:
         torch.save(checkpoint_data, checkpoint_path)
         LOGGER.info("Saved checkpoint to %s", checkpoint_path)
         return checkpoint_path
+
+    def _persist_epoch_metrics(self, metrics: List[EpochMetrics]) -> Path:
+        history_dir = ensure_dir(self.config.artifact_dir / "metadata")
+        summary_file = history_dir / "training_history.json"
+        payload = [
+            {
+                "epoch": entry.epoch,
+                "train_loss": entry.train_loss,
+                "val_loss": entry.val_loss,
+            }
+            for entry in metrics
+        ]
+        ensure_dir(summary_file.parent)
+        summary_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        LOGGER.info("Persisted training history to %s", summary_file)
+        return summary_file
 
 
 def _build_optimizer(parameters: Iterable[torch.Tensor], config: TrainerConfig) -> torch.optim.Optimizer:

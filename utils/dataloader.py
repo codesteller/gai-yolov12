@@ -164,7 +164,8 @@ class COCODataset(Dataset):
         if array.size == 0:
             if shape is None:
                 return torch.zeros((0,), dtype=dtype)
-            return torch.zeros(shape, dtype=dtype)
+            adjusted_shape = tuple(0 if dim == -1 else dim for dim in shape)
+            return torch.zeros(adjusted_shape, dtype=dtype)
         tensor = torch.as_tensor(array, dtype=dtype)
         if shape is not None:
             tensor = tensor.view(shape)

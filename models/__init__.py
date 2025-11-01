@@ -9,9 +9,13 @@
 '''
 
 from .factory import ModelBundle, ModelConfig, create_model
+from .targets import YoloScaleTargets
+from .yolov12 import DetectionScaleOutput
 
 __all__ = [
     "ModelBundle",
     "ModelConfig",
     "create_model",
+    "DetectionScaleOutput",
+    "YoloScaleTargets",
 ]

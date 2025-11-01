@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import torch
 from torch import nn
@@ -22,10 +22,11 @@ LOGGER = logging.getLogger("gai_yolov12.models")
 
 @dataclass
 class BackboneSpec:
-    """Descriptor holding a backbone module and its output channel dimension."""
+    """Descriptor holding a backbone module and its output channel dimensions."""
 
     module: nn.Module
     out_channels: int
+    feature_channels: List[int]
 
 
 class ConvBlock(nn.Module):
@@ -79,10 +80,15 @@ class TinyCSPBackbone(nn.Module):
             channels = hidden_channels
         self.stages = nn.ModuleList(layers)
         self._out_channels = outputs[-1]
+        self._feature_channels = outputs
 
     @property
     def out_channels(self) -> int:
         return self._out_channels
+
+    @property
+    def feature_channels(self) -> List[int]:
+        return list(self._feature_channels)
 
     def forward(self, tensor: torch.Tensor) -> Dict[str, torch.Tensor]:  # noqa: D401
         features: Dict[str, torch.Tensor] = {}
@@ -126,4 +132,5 @@ def build_backbone(
     if not hasattr(module, "out_channels"):
         raise AttributeError(f"Backbone '{name}' must expose an 'out_channels' attribute")
     out_channels = int(getattr(module, "out_channels"))
-    return BackboneSpec(module=module, out_channels=out_channels)
+    feature_channels = list(getattr(module, "feature_channels", [out_channels]))
+    return BackboneSpec(module=module, out_channels=out_channels, feature_channels=feature_channels)

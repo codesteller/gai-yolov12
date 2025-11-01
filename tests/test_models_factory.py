@@ -47,21 +47,22 @@ def test_model_factory_forward_and_loss() -> None:
     inputs = torch.randn(2, 3, 320, 320)
     outputs = model(inputs)
 
-    assert outputs["pred_logits"].shape[0] == 2
-    assert outputs["pred_boxes"].shape[-1] == 4
-    assert outputs["pred_objectness"].shape[-1] == 1
+    predictions = outputs["predictions"]
+    assert isinstance(predictions, list)
+    assert predictions and predictions[0].shape[0] == 2
+    assert predictions[0].shape[-1] == 5 + bundle.metadata["num_classes"]
 
-    anchor_count = outputs["pred_logits"].shape[1]
-    assignments = min(anchor_count, 3)
-
-    targets = [
-        {
-            "assigned_anchors": list(range(assignments)),
-            "assigned_labels": [idx % 4 for idx in range(assignments)],
-            "assigned_boxes": [[0.1 * (idx + 1)] * 4 for idx in range(assignments)],
-        }
-        for _ in range(2)
-    ]
+    targets = []
+    for _ in range(inputs.shape[0]):
+        targets.append(
+            {
+                "assigned_scales": [0],
+                "assigned_anchors": [0],
+                "assigned_grid_xy": [[0, 0]],
+                "assigned_boxes": [[16.0, 16.0, 48.0, 48.0]],
+                "assigned_labels": [1],
+            }
+        )
 
     loss = loss_fn(outputs, targets)
     assert torch.isfinite(loss).item() == 1

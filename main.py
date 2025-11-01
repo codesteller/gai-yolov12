@@ -73,6 +73,8 @@ def main() -> None:
             last_epoch.train_loss,
             f"{last_epoch.val_loss:.4f}" if last_epoch.val_loss is not None else "n/a",
         )
+        if training_result.summary_path is not None:
+            logging.getLogger(__name__).info("Training history saved to %s", training_result.summary_path)
 
 
 if __name__ == "__main__":

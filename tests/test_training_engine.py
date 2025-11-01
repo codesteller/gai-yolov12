@@ -82,15 +82,19 @@ def test_trainer_runs_single_epoch(tmp_path) -> None:
     assert result.metrics[0].train_loss >= 0.0
     assert result.checkpoints
     assert result.checkpoints[0].is_file()
+    assert result.summary_path is not None
+    assert result.summary_path.is_file()
+    history = result.summary_path.read_text(encoding="utf-8")
+    assert "train_loss" in history
 
 
 def test_yolo_grid_assigner_maps_boxes_to_grid() -> None:
     assigner = YoloGridAssigner()
     outputs = {
-        "pred_logits": torch.zeros(1, 4, 3),
-        "pred_boxes": torch.zeros(1, 4, 4),
-        "pred_objectness": torch.zeros(1, 4, 1),
-        "feature_map_shape": (2, 2),
+        "predictions": [torch.zeros(1, 2, 2, 2, 9)],
+        "anchors": [torch.tensor([[32.0, 32.0], [64.0, 64.0]])],
+        "feature_shapes": [(2, 2)],
+        "strides": [32],
     }
     targets = [
         {
@@ -101,9 +105,9 @@ def test_yolo_grid_assigner_maps_boxes_to_grid() -> None:
     ]
 
     assigned = assigner(outputs, targets)
-    anchors = assigned[0]["assigned_anchors"]
-    labels = assigned[0]["assigned_labels"]
+    data = assigned[0]
 
-    assert anchors[0] == 0  # top-left
-    assert labels == [1, 2]
-    assert anchors[1] in {1, 2, 3}
+    assert data["assigned_scales"] == [0, 0, 0, 0]
+    assert data["assigned_anchors"] == [0, 1, 0, 1]
+    assert data["assigned_labels"] == [1, 1, 2, 2]
+    assert data["assigned_grid_xy"] == [[0, 0], [0, 0], [1, 1], [1, 1]]

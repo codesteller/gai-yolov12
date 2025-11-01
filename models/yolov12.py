@@ -10,40 +10,21 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from dataclasses import dataclass
+from typing import List, Sequence, Tuple
 
 import torch
 from torch import nn
 
 
-class DetectionHead(nn.Module):
-    """Single-scale detection head producing class, box, and objectness logits."""
+@dataclass
+class DetectionScaleOutput:
+    """Container for raw detection logits and metadata per feature scale."""
 
-    def __init__(self, in_channels: int, num_classes: int, hidden_channels: int = 128) -> None:
-        super().__init__()
-        self.num_classes = num_classes
-        self.stem = nn.Sequential(
-            nn.Conv2d(in_channels, hidden_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(hidden_channels),
-            nn.SiLU(inplace=True),
-            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(hidden_channels),
-            nn.SiLU(inplace=True),
-        )
-        self.cls_pred = nn.Conv2d(hidden_channels, num_classes, kernel_size=1)
-        self.box_pred = nn.Conv2d(hidden_channels, 4, kernel_size=1)
-        self.obj_pred = nn.Conv2d(hidden_channels, 1, kernel_size=1)
-
-    def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:  # noqa: D401
-        hidden = self.stem(features)
-        cls_logits = self.cls_pred(hidden)
-        box_reg = self.box_pred(hidden)
-        obj_logits = self.obj_pred(hidden)
-        return {
-            "cls_logits": cls_logits,
-            "box_reg": box_reg,
-            "obj_logits": obj_logits,
-        }
+    raw: torch.Tensor  # shape: (B, A, H, W, num_classes + 5)
+    stride: int
+    anchors: torch.Tensor  # shape: (A, 2)
+    grid_size: Tuple[int, int]
 
 
 class GAIYoloV12(nn.Module):
@@ -56,46 +37,108 @@ class GAIYoloV12(nn.Module):
         num_classes: int,
         hidden_channels: int = 128,
         input_channels: int = 3,
+        anchors: Sequence[Sequence[Sequence[float]]] | None = None,
+        strides: Sequence[int] | None = None,
+        input_size: Tuple[int, int] = (640, 640),
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.backbone = backbone
-        backbone_out_channels = self._infer_backbone_channels(backbone, input_channels)
-        self.head = DetectionHead(backbone_out_channels, num_classes, hidden_channels)
+        self.input_size = tuple(input_size)
+
+        if anchors is None or len(anchors) == 0:
+            raise ValueError("Anchors configuration must be provided for YOLO head")
+        self.anchors: List[torch.Tensor] = []
+        for idx, scale in enumerate(anchors):
+            anchor_tensor = torch.tensor(scale, dtype=torch.float32)
+            self.register_buffer(f"_anchors_{idx}", anchor_tensor, persistent=True)
+            self.anchors.append(getattr(self, f"_anchors_{idx}"))
+
+        self.strides: List[int] = list(strides) if strides else [8, 16, 32][: len(self.anchors)]
+        if len(self.strides) != len(self.anchors):
+            raise ValueError("Number of strides must match number of anchor groups")
+
+        feature_channels = self._resolve_feature_channels(backbone)
+        if len(feature_channels) < len(self.anchors):
+            raise ValueError("Backbone does not expose enough feature maps for detection scales")
+
+        selected_channels = feature_channels[-len(self.anchors) :]
+        self.heads = nn.ModuleList(
+            [
+                DetectionHeadBlock(in_ch, len(anchor_group), num_classes, hidden_channels)
+                for in_ch, anchor_group in zip(selected_channels, self.anchors, strict=True)
+            ]
+        )
 
     @staticmethod
-    def _infer_backbone_channels(backbone: nn.Module, input_channels: int) -> int:
+    def _resolve_feature_channels(backbone: nn.Module) -> List[int]:
+        if hasattr(backbone, "feature_channels"):
+            channels = getattr(backbone, "feature_channels")
+            return list(channels)
         if hasattr(backbone, "out_channels"):
-            return int(getattr(backbone, "out_channels"))
-        raise AttributeError("Backbone must define an 'out_channels' attribute")
+            return [int(getattr(backbone, "out_channels"))]
+        raise AttributeError("Backbone must expose feature_channels or out_channels attribute")
 
-    def forward(self, images: torch.Tensor) -> Dict[str, torch.Tensor]:  # noqa: D401
+    def forward(self, images: torch.Tensor) -> List[DetectionScaleOutput]:  # noqa: D401
         features = self.backbone(images)
 
         if isinstance(features, dict):
-            feature_maps = list(features.values())
+            sorted_features = [features[key] for key in sorted(features.keys())]
         elif isinstance(features, (list, tuple)):
-            feature_maps = list(features)
+            sorted_features = list(features)
         else:
-            feature_maps = [features]
+            sorted_features = [features]
 
-        if not feature_maps:
+        if not sorted_features:
             raise ValueError("Backbone returned no feature maps")
 
-        pyramid_feature = feature_maps[-1]
-        head_outputs = self.head(pyramid_feature)
-        cls_logits = head_outputs["cls_logits"]
-        box_reg = head_outputs["box_reg"]
-        obj_logits = head_outputs["obj_logits"]
+        feature_maps = sorted_features[-len(self.heads) :]
+        outputs: List[DetectionScaleOutput] = []
+        _, _, img_h, img_w = images.shape
 
-        batch_size, _, height, width = cls_logits.shape
-        cls_logits = cls_logits.permute(0, 2, 3, 1).reshape(batch_size, -1, self.num_classes)
-        box_reg = box_reg.permute(0, 2, 3, 1).reshape(batch_size, -1, 4)
-        obj_logits = obj_logits.permute(0, 2, 3, 1).reshape(batch_size, -1, 1)
+        for scale_idx, (head, feature, anchor_group, stride) in enumerate(
+            zip(self.heads, feature_maps, self.anchors, self.strides, strict=True)
+        ):
+            raw = head(feature)
+            _, _, height, width, _ = raw.shape
+            stride_h = max(int(round(img_h / height)), 1)
+            stride_w = max(int(round(img_w / width)), 1)
+            stride_value = int(stride) if stride else int(stride_w)
+            # Ensure consistent stride estimation
+            if stride_value != stride_h or stride_value != stride_w:
+                stride_value = int(stride_w)
+            outputs.append(
+                DetectionScaleOutput(
+                    raw=raw,
+                    stride=stride_value,
+                    anchors=anchor_group.to(images.device),
+                    grid_size=(height, width),
+                )
+            )
 
-        return {
-            "pred_logits": cls_logits,
-            "pred_boxes": box_reg,
-            "pred_objectness": obj_logits,
-            "feature_map_shape": (height, width),
-        }
+        return outputs
+
+
+class DetectionHeadBlock(nn.Module):
+    """Multi-anchor detection head producing raw logits for YOLO decoding."""
+
+    def __init__(self, in_channels: int, num_anchors: int, num_classes: int, hidden_channels: int) -> None:
+        super().__init__()
+        self.num_anchors = num_anchors
+        self.num_outputs = num_classes + 5
+        self.block = nn.Sequential(
+            nn.Conv2d(in_channels, hidden_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(hidden_channels),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(hidden_channels),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden_channels, num_anchors * self.num_outputs, kernel_size=1),
+        )
+
+    def forward(self, tensor: torch.Tensor) -> torch.Tensor:
+        raw = self.block(tensor)
+        batch_size, _, height, width = raw.shape
+        raw = raw.view(batch_size, self.num_anchors, self.num_outputs, height, width)
+        raw = raw.permute(0, 1, 3, 4, 2).contiguous()
+        return raw

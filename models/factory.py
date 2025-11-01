@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from torch import nn
@@ -24,6 +24,13 @@ from .yolov12 import GAIYoloV12
 
 LOGGER = logging.getLogger("gai_yolov12.models")
 
+DEFAULT_ANCHORS: List[List[List[float]]] = [
+    [(10.0, 13.0), (16.0, 30.0), (33.0, 23.0)],
+    [(30.0, 61.0), (62.0, 45.0), (59.0, 119.0)],
+    [(116.0, 90.0), (156.0, 198.0), (373.0, 326.0)],
+]
+DEFAULT_STRIDES: List[int] = [8, 16, 32]
+
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -32,12 +39,15 @@ class ModelConfig:
     name: str
     num_classes: int
     input_channels: int = 3
+    input_size: Tuple[int, int] = (640, 640)
     backbone: str = "tiny_csp"
     backbone_params: Dict[str, Any] = field(default_factory=dict)
     head_params: Dict[str, Any] = field(default_factory=dict)
     loss_config: Dict[str, Any] = field(default_factory=dict)
     pretrained: bool = False
     checkpoint_path: Optional[Path] = None
+    anchors: List[List[List[float]]] = field(default_factory=list)
+    strides: List[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.num_classes <= 0:
@@ -46,6 +56,11 @@ class ModelConfig:
             raise ValueError("input_channels must be a positive integer")
         if self.checkpoint_path is not None and not isinstance(self.checkpoint_path, Path):
             object.__setattr__(self, "checkpoint_path", Path(self.checkpoint_path))
+        if not self.anchors:
+            copied = [[list(pair) for pair in scale] for scale in DEFAULT_ANCHORS]
+            object.__setattr__(self, "anchors", copied)
+        if not self.strides:
+            object.__setattr__(self, "strides", list(DEFAULT_STRIDES))
 
     @classmethod
     def from_config(cls, raw_config: Dict[str, Any]) -> "ModelConfig":
@@ -53,22 +68,37 @@ class ModelConfig:
         name = str(model_section.get("name", "gai-yolov12"))
         num_classes = int(model_section.get("num_classes", 0))
         input_channels = int(model_section.get("input_channels", 3))
+        size_values = model_section.get("input_size", [640, 640])
+        if isinstance(size_values, (list, tuple)) and len(size_values) >= 2:
+            input_size = (int(size_values[0]), int(size_values[1]))
+        else:
+            input_size = (640, 640)
         backbone = str(model_section.get("backbone", "tiny_csp"))
         pretrained = bool(model_section.get("pretrained", False))
         checkpoint = model_section.get("checkpoint_path")
         backbone_params = dict(model_section.get("backbone_params", {}))
         head_params = dict(model_section.get("head", {}))
         loss_config = dict(model_section.get("loss", {}))
+        raw_anchors = model_section.get("anchors")
+        anchors: List[List[List[float]]] = []
+        if raw_anchors:
+            for scale in raw_anchors:
+                anchors.append([[float(pair[0]), float(pair[1])] for pair in scale])
+        raw_strides = model_section.get("strides")
+        strides = [int(value) for value in raw_strides] if raw_strides else []
         return cls(
             name=name,
             num_classes=num_classes,
             input_channels=input_channels,
+            input_size=input_size,
             backbone=backbone,
             backbone_params=backbone_params,
             head_params=head_params,
             loss_config=loss_config,
             pretrained=pretrained,
             checkpoint_path=Path(checkpoint).expanduser() if checkpoint else None,
+            anchors=anchors,
+            strides=strides,
         )
 
 
@@ -98,13 +128,21 @@ def create_model(config: Dict[str, Any] | ModelConfig, *, load_checkpoint: bool 
 
     backbone_spec = _build_backbone(model_config)
     model = _build_model(model_config, backbone_spec)
-    loss_fn = build_loss(model_config.loss_config, model_config.num_classes)
+    loss_fn = build_loss(
+        model_config.loss_config,
+        model_config.num_classes,
+        anchors=model_config.anchors,
+        strides=model_config.strides,
+    )
 
     metadata = {
         "model_name": model_config.name,
         "backbone": model_config.backbone,
         "num_classes": model_config.num_classes,
         "num_parameters": sum(param.numel() for param in model.parameters()),
+        "anchors": model_config.anchors,
+        "strides": model_config.strides,
+        "input_size": model_config.input_size,
     }
 
     if load_checkpoint and model_config.checkpoint_path is not None:
@@ -126,11 +164,16 @@ def _build_backbone(model_config: ModelConfig) -> BackboneSpec:
 def _build_model(model_config: ModelConfig, backbone_spec: BackboneSpec) -> GAIYoloV12:
     head_params = dict(model_config.head_params)
     hidden_channels = int(head_params.get("hidden_channels", 128))
+    anchors = model_config.anchors
+    strides = model_config.strides
     return GAIYoloV12(
         backbone=backbone_spec.module,
         num_classes=model_config.num_classes,
         hidden_channels=hidden_channels,
         input_channels=model_config.input_channels,
+        anchors=anchors,
+        strides=strides,
+        input_size=model_config.input_size,
     )
 
 
