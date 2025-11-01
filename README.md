@@ -30,13 +30,13 @@ Classes supported:
     2. Applies data augmentation techniques to the input data.
     3. Prepares data for feeding into the model during training and evaluation.
     4. Converts Datasets from various formats (BDD, Pascal VOC, Waymo, Appoloscape, Cityscapes, KITTI, Custom Dataset) to COCO format and saves them.
-- 'models': Contains the GAI-YOLOv12 model architecture and related components. This module 
+- 'models' **[TODO]**: Contains the GAI-YOLOv12 model architecture and related components. This module 
     1. Implements loading pretrained weights for transfer learning using popular backbones. 
     2. Defines the architecture of the GAI-YOLOv12 model.
     3. Includes layers, activation functions, and other building blocks of the model.
     4. Provides utilities for model initialization and weight loading.
     5. Includes custom loss functions specific to object detection tasks.
-- 'train': Contains training scripts and utilities for training the GAI-YOLOv12 model. This module 
+- 'train' **[TODO]**: Contains training scripts and utilities for training the GAI-YOLOv12 model. This module 
     1. Implements the training loop for the model.
     2. Handles optimization, learning rate scheduling, and checkpointing.
     3. Logs training metrics and progress.

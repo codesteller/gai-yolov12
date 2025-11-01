@@ -9,6 +9,7 @@ import argparse
 import logging
 from pathlib import Path
 
+from train import run_training
 from utils.converter import run_conversion
 from utils.utils import load_yaml_config
 
@@ -60,8 +61,18 @@ def main() -> None:
         logging.getLogger(__name__).info("Conversion finished; exiting due to --only-convert")
         return
 
-    # Placeholder for upcoming training workflow.
-    logging.getLogger(__name__).info("Training pipeline not yet implemented. Coming soon.")
+    logging.getLogger(__name__).info("Starting training pipeline")
+    training_result = run_training(config)
+    if not training_result.metrics:
+        logging.getLogger(__name__).warning("Training did not run; see logs for details")
+    else:
+        last_epoch = training_result.metrics[-1]
+        logging.getLogger(__name__).info(
+            "Training complete | epochs=%d | final_train_loss=%.4f | final_val_loss=%s",
+            last_epoch.epoch,
+            last_epoch.train_loss,
+            f"{last_epoch.val_loss:.4f}" if last_epoch.val_loss is not None else "n/a",
+        )
 
 
 if __name__ == "__main__":

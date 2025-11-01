@@ -9,9 +9,11 @@ wheels/
 # Output folders 
 tests/__pycache__/
 tests/test_output/
+experiments/
 
 # Virtual environments
 .venv
+
 
 # image files
 *.png
