@@ -24,24 +24,37 @@ Classes supported:
 - Traffic sign [10]
 
 
+## Features
+
+### 🔍 Comprehensive Metadata Generation
+Every training experiment automatically generates detailed metadata including:
+- **Model Architecture Summary**: Parameters, layers, backbone details
+- **Training Configuration**: Hyperparameters, optimizer settings, device info
+- **Parameter Analysis**: Per-layer breakdown, trainable vs non-trainable parameters
+- **Experiment Tracking**: Complete configuration snapshots for reproducibility
+
+See [docs/metadata_generation.md](docs/metadata_generation.md) for full details.
+
 ## Modules
 - 'dataloaders': Contains data loading utilities and custom dataset classes. This is a object detection dataloader utility module. This module 
     1. loads data for training and evaluation of the model.
     2. Applies data augmentation techniques to the input data.
     3. Prepares data for feeding into the model during training and evaluation.
     4. Converts Datasets from various formats (BDD, Pascal VOC, Waymo, Appoloscape, Cityscapes, KITTI, Custom Dataset) to COCO format and saves them.
-- 'models' **[TODO]**: Contains the GAI-YOLOv12 model architecture and related components. This module 
+- 'models': Contains the GAI-YOLOv12 model architecture and related components. This module 
     1. Implements loading pretrained weights for transfer learning using popular backbones. 
     2. Defines the architecture of the GAI-YOLOv12 model.
     3. Includes layers, activation functions, and other building blocks of the model.
     4. Provides utilities for model initialization and weight loading.
     5. Includes custom loss functions specific to object detection tasks.
-- 'train' **[TODO]**: Contains training scripts and utilities for training the GAI-YOLOv12 model. This module 
+    6. **NEW**: Multi-scale YOLO architecture with anchor-aware target encoding
+- 'train': Contains training scripts and utilities for training the GAI-YOLOv12 model. This module 
     1. Implements the training loop for the model.
     2. Handles optimization, learning rate scheduling, and checkpointing.
     3. Logs training metrics and progress.
     4. Provides options for hyperparameter tuning and configuration.
     5. Logs training progress and metrics using TensorBoard along with saving model checkpoints at regular intervals and 5 images with predicted bounding boxes after every epoch to visualize the model's performance and debug improvements.
+    6. **NEW**: Automatic metadata generation for every experiment
 - 'evaluate': Contains evaluation scripts and utilities for assessing the performance of the GAI-YOLOv12 model. This module 
     1. Implements evaluation metrics such as mAP (mean Average Precision).
     2. Loads trained model checkpoints for evaluation.
@@ -85,3 +98,38 @@ Or using pip with the provided pyproject.toml:
 ```bash
 pip install .
 ```
+
+## TODO / Roadmap
+
+### Backbones
+- [ ] Add torchvision backbone support
+  - [ ] **MobileNetV3** (2.5M - 5.5M params) - Mobile/edge deployment
+  - [ ] **EfficientNet B0-B3** (5.3M - 12M params) - Best accuracy/efficiency tradeoff
+  - [ ] **ResNet18/34** (11.7M - 21.8M params) - Fast and reliable
+  - [ ] **RegNet** (4.3M - 19.4M params) - Optimized by NAS
+- [ ] Enable ImageNet pretrained weight loading for all backbones
+- [ ] Add backbone comparison benchmarks (speed vs accuracy)
+
+### Features
+- [ ] Multi-GPU training support (DistributedDataParallel)
+- [ ] Mixed precision training (AMP) for faster training
+- [ ] Export to ONNX/TensorRT for deployment
+- [ ] Model quantization for edge devices
+- [ ] Automatic hyperparameter tuning (Optuna/Ray Tune)
+- [ ] Data pipeline optimization with DALI
+
+### Datasets
+- [ ] Complete BDD100K support
+- [ ] Pascal VOC integration
+- [ ] Waymo dataset support
+- [ ] Apolloscape dataset support
+- [ ] Cityscapes dataset support
+- [ ] KITTI dataset support
+- [ ] EuroCityPersons custom dataset
+- [ ] Meteor custom dataset
+
+### Documentation
+- [ ] Add training tutorials with examples
+- [ ] Performance benchmarks on different datasets
+- [ ] Model architecture deep dive
+- [ ] Deployment guide (ONNX, TensorRT, mobile)

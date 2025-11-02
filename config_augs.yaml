@@ -10,11 +10,15 @@ dataset:
   convert_to_coco: true
   export_coco_path: "/mnt/team-share/Datasets/bdd-datasets/BDD/bdd_100k/coco_format/"
 
-model:
-  name: "gai-yolo12"
-  pretrained: true
-  num_classes: 10
-  input_size: [640, 640]
+experiment:
+  name: "GAI-YOLOv12-Experiment-001"
+  description: "Experimenting with GAI-YOLOv12 on BDD100K"
+  num_epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  tensorboard:
+    enabled: true
+    log_interval: 10
 
 dataloader:
   batch_size: 64
@@ -27,8 +31,11 @@ dataloader:
     - "ColorJitter"
     - "NoiseInjection"
     - "RandomRotation"
+    - "Cutout"
+    - "MixUp"
+    - "CutMix"
     - "MotionBlur"
-  augmentation_probabilities_per_batch: 0.2  # 20% of the batch will have augmentations applied randomly
+  augmentation_probabilities_per_batch: 0.4  # 40% of the batch will have augmentations applied randomly
   augmentations:
     - type: "RandomHorizontalFlip"
       probability: 0.5
@@ -46,30 +53,23 @@ dataloader:
     - type: "RandomRotation"
       degrees: 10
       fill: "black"
+    - type: "Cutout"
+      num_holes: 1
+      max_h_size: 50
+      max_w_size: 50
+      fill_value: 0
+    - type: "MixUp"
+      alpha: 0.4
+      p: 0.5
+    - type: "CutMix"
+      alpha: 1.0
+      p: 0.5
     - type: "MotionBlur"
       kernel_size: 5
       p: 0.3
 
-experiment:
-  name: "gai-yolov12-experiment-001"
-  description: "Experimenting with GAI-YOLOv12 on BDD100K"
-  num_epochs: 100
-  learning_rate: 0.0001
-  weight_decay: 0.00001
-  max_batches_per_epoch: null  # Limit each epoch to 100 batches for faster testing, null for full epoch
-  checkpoint_interval: 1  # Save checkpoint every epoch
-  gradient_clip_norm: 10.0
-  log_interval: 10
-  tensorboard:
-    enabled: true
-    log_interval: 10
-    log_images: true
-    images_per_batch: 2
-    image_log_interval: 100  # Log images every 100 batches
-    show_ground_truth: false  # Show ground truth boxes in visualizations
-    show_predictions: true   # Show prediction boxes in visualizations
-  evaluation:
-    enabled: true
-    eval_interval: 5  # Evaluate COCO metrics every 5 epochs
-    eval_on_validation: true
-    visualization_conf_threshold: 0.1  # Confidence threshold for showing predictions (0.01-1.0)
+model:
+  name: "gai-yolo12"
+  pretrained: true
+  num_classes: 10
+  input_size: [640, 640]

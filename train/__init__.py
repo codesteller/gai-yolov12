@@ -13,7 +13,7 @@ from .engine import (
     Trainer,
     TrainerConfig,
     TrainingResult,
-    YoloGridAssigner,
+    YoloTargetEncoder,
     run_training,
 )
 
@@ -22,6 +22,6 @@ __all__ = [
     "Trainer",
     "EpochMetrics",
     "TrainingResult",
-    "YoloGridAssigner",
+    "YoloTargetEncoder",
     "run_training",
 ]

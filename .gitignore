@@ -25,3 +25,9 @@ experiments/
 *.svg   
 
 
+# Output dirs
+experiments/
+logs/
+checkpoints/
+results/
+output/

@@ -11,7 +11,8 @@ dataset:
   export_coco_path: "/mnt/team-share/Datasets/bdd-datasets/BDD/bdd_100k/coco_format/"
 
 model:
-  name: "gai-yolo12"
+  name: "gai-yolov12"
+  variant: "n"  # Model variant: n (nano), s (small), m (medium), l (large), x (xlarge)
   pretrained: true
   num_classes: 10
   input_size: [640, 640]
@@ -20,7 +21,20 @@ dataloader:
   batch_size: 64
   num_workers: 16
   pin_memory: true
-  augmentation: true
+  shuffle: true
+
+training:
+  num_epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  warmup_epochs: 3
+  checkpoint_interval: 5  # Save checkpoint every N epochs
+  gradient_clip_norm: 10.0  # Gradient clipping
+
+augmentation:
+  mixup_prob: 0.15
+  cutmix_prob: 0.15
+  mosaic_prob: 0.5
   augmentation_strategies:
     - "RandomHorizontalFlip"
     - "RandomCrop"
@@ -51,25 +65,25 @@ dataloader:
       p: 0.3
 
 experiment:
-  name: "gai-yolov12-experiment-001"
+  name: "gai-yolov12-experiment-{timestamp}"  # Use {timestamp} for automatic naming
   description: "Experimenting with GAI-YOLOv12 on BDD100K"
-  num_epochs: 100
-  learning_rate: 0.0001
-  weight_decay: 0.00001
-  max_batches_per_epoch: null  # Limit each epoch to 100 batches for faster testing, null for full epoch
-  checkpoint_interval: 1  # Save checkpoint every epoch
-  gradient_clip_norm: 10.0
+  output_dir: "experiments"
   log_interval: 10
-  tensorboard:
-    enabled: true
-    log_interval: 10
-    log_images: true
-    images_per_batch: 2
-    image_log_interval: 100  # Log images every 100 batches
-    show_ground_truth: false  # Show ground truth boxes in visualizations
-    show_predictions: true   # Show prediction boxes in visualizations
-  evaluation:
-    enabled: true
-    eval_interval: 5  # Evaluate COCO metrics every 5 epochs
-    eval_on_validation: true
-    visualization_conf_threshold: 0.1  # Confidence threshold for showing predictions (0.01-1.0)
+
+# Evaluation settings
+evaluation:
+  eval_interval: 5  # Evaluate COCO metrics every N epochs
+  coco_eval_batches: 100  # Limit number of batches for COCO evaluation
+  enable_coco_eval: true
+
+# Batch limitations for faster epochs
+batch_limits:
+  train_batches_per_epoch: 100  # Limit each epoch to N batches (null for no limit)
+  val_batches_per_epoch: 50     # Limit validation batches (null for no limit)
+
+# TensorBoard settings
+tensorboard:
+  enabled: true
+  log_images: true
+  image_log_interval: 100  # Log images every N batches
+  images_per_batch: 2      # Number of images to log per batch

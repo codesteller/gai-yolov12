@@ -10,13 +10,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List
 
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from models import create_model
-from train import Trainer, TrainerConfig, YoloGridAssigner
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from models import DetectionScaleOutput, create_model
+from train import Trainer, TrainerConfig, YoloTargetEncoder
 
 
 def _detection_collate(batch: List[tuple[torch.Tensor, Dict[str, torch.Tensor]]]) -> tuple[torch.Tensor, List[Dict[str, torch.Tensor]]]:
@@ -61,6 +68,8 @@ def test_trainer_runs_single_epoch(tmp_path) -> None:
             "backbone_params": {"base_channels": 8, "depth": 1},
             "head": {"hidden_channels": 16},
             "loss": {"cls_weight": 1.0, "bbox_weight": 1.0, "obj_weight": 1.0},
+                "anchors": [[[16.0, 16.0], [32.0, 32.0]]],
+                "strides": [32],
         },
         "experiment": {
             "num_epochs": 1,
@@ -88,26 +97,24 @@ def test_trainer_runs_single_epoch(tmp_path) -> None:
     assert "train_loss" in history
 
 
-def test_yolo_grid_assigner_maps_boxes_to_grid() -> None:
-    assigner = YoloGridAssigner()
-    outputs = {
-        "predictions": [torch.zeros(1, 2, 2, 2, 9)],
-        "anchors": [torch.tensor([[32.0, 32.0], [64.0, 64.0]])],
-        "feature_shapes": [(2, 2)],
-        "strides": [32],
-    }
+def test_yolo_target_encoder_assigns_anchor_targets() -> None:
+    encoder = YoloTargetEncoder()
+    raw = torch.zeros(1, 2, 2, 2, 9)
+    anchors = torch.tensor([[32.0, 32.0], [64.0, 64.0]])
+    outputs = [DetectionScaleOutput(raw=raw, stride=32, anchors=anchors, grid_size=(2, 2))]
     targets = [
         {
-            "boxes": torch.tensor([[0.0, 0.0, 32.0, 32.0], [32.0, 32.0, 64.0, 64.0]]),
+            "boxes": torch.tensor([[0.0, 0.0, 32.0, 32.0], [32.0, 32.0, 64.0, 64.0]], dtype=torch.float32),
             "labels": torch.tensor([1, 2], dtype=torch.int64),
             "size": torch.tensor([64, 64], dtype=torch.float32),
         }
     ]
 
-    assigned = assigner(outputs, targets)
-    data = assigned[0]
+    scale_targets = encoder(outputs, targets)[0]
 
-    assert data["assigned_scales"] == [0, 0, 0, 0]
-    assert data["assigned_anchors"] == [0, 1, 0, 1]
-    assert data["assigned_labels"] == [1, 1, 2, 2]
-    assert data["assigned_grid_xy"] == [[0, 0], [0, 0], [1, 1], [1, 1]]
+    assert torch.isclose(scale_targets.objectness.sum(), torch.tensor(2.0))
+    assert scale_targets.class_id[0, 0, 0, 0].item() == 1
+    assert scale_targets.class_id[0, 0, 1, 1].item() == 2
+    assert scale_targets.class_id[0, 1].eq(-1).all()
+    assert scale_targets.objectness_iou[0, 0, 0, 0] > 0.0
+    assert scale_targets.ignore_mask.sum() >= 0.0
