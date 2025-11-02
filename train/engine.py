@@ -22,6 +22,7 @@ from torch import nn
 from torch.nn.utils import clip_grad_norm_
 import numpy as np
 import cv2
+from torchinfo import summary as torchinfo_summary
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 import tempfile
@@ -824,7 +825,7 @@ class Trainer:
             LOGGER.warning(f"Failed to save experiment configuration: {e}")
 
     def _log_model_graph(self) -> None:
-        """Log model graph to TensorBoard."""
+        """Log model architecture using torchinfo and attempt TensorBoard graph."""
         try:
             if self.writer is None:
                 return
@@ -836,31 +837,45 @@ class Trainer:
             # Set model to eval mode for graph logging
             self.model.eval()
             
-            # Use torch.jit.trace instead of add_graph for complex models
+            # Generate detailed architecture summary using torchinfo
+            try:
+                LOGGER.info("Generating model architecture summary with torchinfo...")
+                model_stats = torchinfo_summary(
+                    self.model,
+                    input_size=(1, 3, input_size[0], input_size[1]),
+                    col_names=["input_size", "output_size", "num_params", "kernel_size", "mult_adds"],
+                    verbose=0,  # Don't print to console
+                    device=self.device
+                )
+                
+                # Save the summary to a text file
+                summary_text = str(model_stats)
+                summary_path = self.config.artifact_dir / "metadata" / "model_architecture.txt"
+                with open(summary_path, 'w') as f:
+                    f.write(summary_text)
+                LOGGER.info(f"Model architecture summary saved to {summary_path}")
+                
+                # Log the summary as text to TensorBoard
+                self.writer.add_text('Model/Architecture', f"```\n{summary_text}\n```", 0)
+                
+            except Exception as torchinfo_error:
+                LOGGER.warning(f"Could not generate torchinfo summary: {torchinfo_error}")
+            
+            # Try to log the model graph to TensorBoard
             try:
                 with torch.no_grad():
-                    # Try standard add_graph first
                     self.writer.add_graph(self.model, dummy_input)
                     self.writer.flush()
                     LOGGER.info("Model graph logged to TensorBoard")
             except Exception as graph_error:
-                # Fall back to JIT tracing if add_graph fails
-                LOGGER.info("Standard graph logging failed, trying JIT trace...")
-                try:
-                    traced_model = torch.jit.trace(self.model, dummy_input)
-                    self.writer.add_graph(traced_model, dummy_input)
-                    self.writer.flush()
-                    LOGGER.info("Model graph logged to TensorBoard using JIT trace")
-                except Exception as jit_error:
-                    # If both fail, log warning but continue
-                    LOGGER.warning(f"Could not log model graph: {graph_error}. JIT trace also failed: {jit_error}")
-                    LOGGER.info("Skipping model graph visualization (non-critical)")
+                LOGGER.info(f"TensorBoard graph visualization not available: {graph_error}")
+                LOGGER.info("This is normal for YOLO models - check model_architecture.txt instead")
             
             # Set model back to train mode
             self.model.train()
             
         except Exception as e:
-            LOGGER.warning(f"Could not log model graph to TensorBoard: {e}")
+            LOGGER.warning(f"Error in model graph logging: {e}")
             # This is not critical, so we continue without the graph
 
     def _evaluate_coco_metrics(self, epoch: int) -> Dict[str, float]:
