@@ -99,7 +99,7 @@ Examples:
     parser.add_argument(
         "--config",
         type=str,
-        default="config.yaml",
+        default="configs/config.yaml",
         help="Path to the YAML configuration file",
     )
     parser.add_argument(

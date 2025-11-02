@@ -28,7 +28,7 @@ This will:
 ### Resume with Custom Config
 
 ```bash
-uv run main.py --config config_test_resume.yaml --resume
+uv run main.py --config configs/config.yaml --resume
 ```
 
 ### First Time Training (No Resume)
@@ -65,14 +65,14 @@ Training metrics are automatically saved to `training_metrics.json` in the check
 
 1. **Start training**:
    ```bash
-   uv run main.py --config config.yaml
+   uv run main.py --config configs/config.yaml
    ```
 
 2. **Training interrupted** (e.g., Ctrl+C, system crash, etc.)
 
 3. **Resume training**:
    ```bash
-   uv run main.py --config config.yaml --resume
+   uv run main.py --config configs/config.yaml --resume
    ```
 
 The training will continue from where it left off, maintaining all training state.
@@ -100,10 +100,10 @@ A test configuration is provided for quick testing:
 
 ```bash
 # Run short training
-uv run main.py --config config_test_resume.yaml
+uv run main.py --config configs/config_test_resume.yaml
 
 # Then test resume
-uv run main.py --config config_test_resume.yaml --resume
+uv run main.py --config configs/config_test_resume.yaml --resume
 ```
 
 The test config uses only 2 epochs and limited batches for quick validation.

@@ -836,16 +836,31 @@ class Trainer:
             # Set model to eval mode for graph logging
             self.model.eval()
             
-            # Log the model graph
-            self.writer.add_graph(self.model, dummy_input)
-            self.writer.flush()
-            LOGGER.info("Model graph logged to TensorBoard")
+            # Use torch.jit.trace instead of add_graph for complex models
+            try:
+                with torch.no_grad():
+                    # Try standard add_graph first
+                    self.writer.add_graph(self.model, dummy_input)
+                    self.writer.flush()
+                    LOGGER.info("Model graph logged to TensorBoard")
+            except Exception as graph_error:
+                # Fall back to JIT tracing if add_graph fails
+                LOGGER.info("Standard graph logging failed, trying JIT trace...")
+                try:
+                    traced_model = torch.jit.trace(self.model, dummy_input)
+                    self.writer.add_graph(traced_model, dummy_input)
+                    self.writer.flush()
+                    LOGGER.info("Model graph logged to TensorBoard using JIT trace")
+                except Exception as jit_error:
+                    # If both fail, log warning but continue
+                    LOGGER.warning(f"Could not log model graph: {graph_error}. JIT trace also failed: {jit_error}")
+                    LOGGER.info("Skipping model graph visualization (non-critical)")
             
             # Set model back to train mode
             self.model.train()
             
         except Exception as e:
-            LOGGER.debug(f"Could not log model graph to TensorBoard: {e}")
+            LOGGER.warning(f"Could not log model graph to TensorBoard: {e}")
             # This is not critical, so we continue without the graph
 
     def _evaluate_coco_metrics(self, epoch: int) -> Dict[str, float]:

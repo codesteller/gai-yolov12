@@ -11,10 +11,16 @@ dataset:
   export_coco_path: "/mnt/team-share/Datasets/bdd-datasets/BDD/bdd_100k/coco_format/"
 
 model:
-  name: "gai-yolo12"
+  name: "gai-yolo12-large"
   pretrained: true
   num_classes: 10
   input_size: [640, 640]
+  backbone: "tiny_csp"          # Backbone architecture: "tiny_csp"
+  backbone_params:               # Backbone-specific parameters
+    base_channels: 128            # Base channel width (32, 64, 128, 256)
+    depth: 4                     # Number of stages (2, 3, 4)
+  head:                          # Detection head configuration
+    hidden_channels: 256         # Hidden layer channels in detection head (128, 256, 512)
 
 dataloader:
   batch_size: 64
@@ -51,8 +57,8 @@ dataloader:
       p: 0.3
 
 experiment:
-  name: "gai-yolov12-experiment-001"
-  description: "Experimenting with GAI-YOLOv12 on BDD100K"
+  name: "gai-yolov12-experiment-002"
+  description: "Experimenting with GAI-YOLOv12 on BDD100K with large config"
   num_epochs: 100
   learning_rate: 0.0001
   weight_decay: 0.00001

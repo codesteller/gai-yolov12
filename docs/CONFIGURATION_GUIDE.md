@@ -584,14 +584,14 @@ experiment:
 
 ### Basic Training
 ```bash
-# Use default config.yaml
+# Use default configs/config.yaml
 uv run main.py
 
 # Use custom config
-uv run main.py --config my_config.yaml
+uv run main.py --config configs/my_config.yaml
 
 # Resume from checkpoint
-uv run main.py --config my_config.yaml --resume
+uv run main.py --config configs/my_config.yaml --resume
 ```
 
 ### TensorBoard
