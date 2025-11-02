@@ -191,6 +191,7 @@ experiment:
   checkpoint_interval: 5                      # Save checkpoint every N epochs
   gradient_clip_norm: 10.0                    # Gradient clipping threshold (null to disable)
   log_interval: 10                            # Log metrics every N batches
+  use_amp: false                              # Enable Automatic Mixed Precision (AMP)
   optimizer: "adamw"                          # Optimizer type
   scheduler: null                             # Learning rate scheduler (null to disable)
   scheduler_params: {}                        # Scheduler-specific parameters
@@ -221,6 +222,37 @@ experiment:
   weight_decay: 0.0005
 ```
 
+### Automatic Mixed Precision (AMP)
+
+Enable AMP for faster training with lower GPU memory usage:
+
+```yaml
+experiment:
+  use_amp: true  # Enable AMP (requires CUDA)
+```
+
+**Benefits of AMP:**
+- ⚡ **1.5-3x faster training** on modern GPUs (Volta, Turing, Ampere, Ada)
+- 💾 **~40% lower memory usage** - fit larger batch sizes
+- 🎯 **No accuracy loss** - automatic gradient scaling
+- ✅ **Minimal code changes** - handled automatically
+
+**When to use AMP:**
+
+| Use AMP (true) | Don't use AMP (false) |
+|----------------|----------------------|
+| Training on NVIDIA GPU (V100, RTX, A100, etc.) | CPU training |
+| Large models/batch sizes | Small models with plenty of memory |
+| Production training runs | Debugging numerical issues |
+| Modern GPU architecture (≥Volta) | Older GPUs (≤Pascal) |
+
+**Requirements:**
+- NVIDIA GPU with Tensor Cores (V100, RTX 20xx/30xx/40xx, A100, etc.)
+- CUDA-enabled PyTorch installation
+- GPU driver 418+ for Volta/Turing, 450+ for Ampere
+
+**Note:** If AMP is enabled but CUDA is not available, training will automatically fall back to FP32 with a warning.
+
 **Parameters:**
 - `name`: Experiment identifier (use {timestamp} for auto-naming)
 - `num_epochs`: Total training epochs
@@ -229,6 +261,7 @@ experiment:
 - `max_batches_per_epoch`: Limit batches for faster debugging (null for full dataset)
 - `checkpoint_interval`: Frequency of checkpoint saves
 - `gradient_clip_norm`: Prevent gradient explosion (typically 1.0-10.0)
+- `use_amp`: Enable Automatic Mixed Precision for faster training (requires CUDA)
 
 ---
 

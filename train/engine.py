@@ -20,6 +20,7 @@ import torch
 import torchvision.transforms.functional as F
 from torch import nn
 from torch.nn.utils import clip_grad_norm_
+from torch.cuda.amp import autocast, GradScaler
 import numpy as np
 import cv2
 from torchinfo import summary as torchinfo_summary
@@ -119,6 +120,7 @@ class TrainerConfig:
     eval_on_validation: bool = True
     max_batches_per_epoch: Optional[int] = None
     visualization_conf_threshold: float = 0.01  # Confidence threshold for visualization
+    use_amp: bool = False  # Enable Automatic Mixed Precision training
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "TrainerConfig":
@@ -160,6 +162,9 @@ class TrainerConfig:
         max_batches = experiment_cfg.get("max_batches_per_epoch")
         max_batches_per_epoch = int(max_batches) if max_batches is not None else None
         
+        # Parse AMP (Automatic Mixed Precision) setting
+        use_amp = bool(experiment_cfg.get("use_amp", False))
+        
         return cls(
             num_epochs=int(experiment_cfg.get("num_epochs", 1)),
             learning_rate=float(experiment_cfg.get("learning_rate", 1e-3)),
@@ -185,6 +190,7 @@ class TrainerConfig:
             eval_on_validation=eval_on_validation,
             max_batches_per_epoch=max_batches_per_epoch,
             visualization_conf_threshold=max(0.001, min(1.0, visualization_conf_threshold)),
+            use_amp=use_amp,
         )
 
     def resolve_device(self) -> torch.device:
@@ -401,6 +407,14 @@ class Trainer:
         )
         self.checkpoint_dir = ensure_dir(config.artifact_dir / "checkpoints")
         
+        # Initialize AMP GradScaler if enabled
+        self.scaler: Optional[GradScaler] = None
+        if config.use_amp and self.device.type == 'cuda':
+            self.scaler = GradScaler()
+            LOGGER.info("Automatic Mixed Precision (AMP) enabled")
+        elif config.use_amp and self.device.type != 'cuda':
+            LOGGER.warning("AMP requested but CUDA not available. Running in FP32 mode.")
+        
         # Initialize TensorBoard logging
         self.writer: Optional[SummaryWriter] = None
         if config.enable_tensorboard:
@@ -495,14 +509,35 @@ class Trainer:
                 
             images = images.to(self.device)
             targets_on_device = self._move_targets_to_device(targets)
-            outputs = self.model(images)
-            assigned_targets = self.assigner(outputs, targets_on_device)
-            loss = self.loss_fn(outputs, assigned_targets)
-            loss.backward()
-            if self.config.gradient_clip_norm is not None and self.config.gradient_clip_norm > 0:
-                clip_grad_norm_(self.model.parameters(), self.config.gradient_clip_norm)
-            self.optimizer.step()
-            self.optimizer.zero_grad(set_to_none=True)
+            
+            # Use automatic mixed precision if enabled
+            if self.scaler is not None:
+                with autocast():
+                    outputs = self.model(images)
+                    assigned_targets = self.assigner(outputs, targets_on_device)
+                    loss = self.loss_fn(outputs, assigned_targets)
+                
+                self.scaler.scale(loss).backward()
+                
+                if self.config.gradient_clip_norm is not None and self.config.gradient_clip_norm > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    clip_grad_norm_(self.model.parameters(), self.config.gradient_clip_norm)
+                
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                self.optimizer.zero_grad(set_to_none=True)
+            else:
+                # Standard FP32 training
+                outputs = self.model(images)
+                assigned_targets = self.assigner(outputs, targets_on_device)
+                loss = self.loss_fn(outputs, assigned_targets)
+                loss.backward()
+                
+                if self.config.gradient_clip_norm is not None and self.config.gradient_clip_norm > 0:
+                    clip_grad_norm_(self.model.parameters(), self.config.gradient_clip_norm)
+                
+                self.optimizer.step()
+                self.optimizer.zero_grad(set_to_none=True)
 
             total_loss += float(loss.item())
             total_batches += 1

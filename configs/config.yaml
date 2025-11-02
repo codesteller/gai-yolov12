@@ -66,6 +66,7 @@ experiment:
   checkpoint_interval: 1  # Save checkpoint every epoch
   gradient_clip_norm: 10.0
   log_interval: 10
+  use_amp: false  # Enable Automatic Mixed Precision (AMP) for faster training with lower memory
   tensorboard:
     enabled: true
     log_interval: 10

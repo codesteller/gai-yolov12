@@ -24,7 +24,9 @@ model:
 
 dataloader:
   batch_size: 64
-  num_workers: 16
+  num_workers: 28
+  prefetch_factor: 4
+  persistent_workers: true
   pin_memory: true
   augmentation: true
   augmentation_strategies:
@@ -66,6 +68,7 @@ experiment:
   checkpoint_interval: 1  # Save checkpoint every epoch
   gradient_clip_norm: 10.0
   log_interval: 10
+  use_amp: true  # Enable Automatic Mixed Precision (AMP) for faster training with lower memory
   tensorboard:
     enabled: true
     log_interval: 10

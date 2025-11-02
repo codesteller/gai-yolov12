@@ -322,15 +322,27 @@ def create_dataloaders(config: Dict[str, Any]) -> Dict[str, DataLoader]:
         split_config = DatasetSplit(split, images_dir, split_ann, apply_aug)
         dataset = COCODataset(split_config, pipelines, category_mapping)
         collate = DetectionCollate(batch_augmentor if split == "train" else None)
-        dataloaders[split] = DataLoader(
-            dataset,
-            batch_size=int(dataloader_cfg.get("batch_size", 16)),
-            shuffle=split == "train",
-            num_workers=int(dataloader_cfg.get("num_workers", 4)),
-            pin_memory=bool(dataloader_cfg.get("pin_memory", True)),
-            collate_fn=collate,
-            drop_last=split == "train",
-        )
+        
+        # Build DataLoader with performance optimizations
+        num_workers = int(dataloader_cfg.get("num_workers", 4))
+        dataloader_kwargs = {
+            "dataset": dataset,
+            "batch_size": int(dataloader_cfg.get("batch_size", 16)),
+            "shuffle": split == "train",
+            "num_workers": num_workers,
+            "pin_memory": bool(dataloader_cfg.get("pin_memory", True)),
+            "collate_fn": collate,
+            "drop_last": split == "train",
+        }
+        
+        # Add prefetch_factor and persistent_workers only if num_workers > 0
+        if num_workers > 0:
+            if "prefetch_factor" in dataloader_cfg:
+                dataloader_kwargs["prefetch_factor"] = int(dataloader_cfg["prefetch_factor"])
+            if "persistent_workers" in dataloader_cfg:
+                dataloader_kwargs["persistent_workers"] = bool(dataloader_cfg["persistent_workers"])
+        
+        dataloaders[split] = DataLoader(**dataloader_kwargs)
         LOGGER.info(
             "Prepared %s dataloader: %d samples, batch_size=%s, augmentations=%s",
             split,
