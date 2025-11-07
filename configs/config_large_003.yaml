@@ -11,7 +11,7 @@ dataset:
   export_coco_path: "/mnt/team-share/Datasets/bdd-datasets/BDD/bdd_100k/coco_format/"
 
 model:
-  name: "gai-yolo12-large"
+  name: "gai-yolo12-large-003"
   pretrained: true
   num_classes: 10
   input_size: [640, 640]
@@ -21,54 +21,53 @@ model:
     depth: 4                     # Number of stages (2, 3, 4)
   head:                          # Detection head configuration
     hidden_channels: 256         # Hidden layer channels in detection head (128, 256, 512)
+  
+  # Fine-tuning configuration
+  freeze_backbone: true          # Freeze backbone initially for faster convergence
+  freeze_neck: false             # Train neck/FPN layers
+  freeze_until_epoch: 10         # Unfreeze backbone after epoch 10
+  backbone_lr_multiplier: 0.1    # Backbone learns 10x slower (when unfrozen)
+  neck_lr_multiplier: 0.5        # Neck learns 2x slower
 
 dataloader:
-  batch_size: 96
+  batch_size: 128
   num_workers: 20
   prefetch_factor: 4
   persistent_workers: false
   pin_memory: true
-  augmentation: true
-  augmentation_strategies:
+  augmentation: true             # Enable light augmentation for fine-tuning
+  augmentation_strategies:       # Light augmentation only
     - "RandomHorizontalFlip"
-    - "RandomCrop"
     - "ColorJitter"
-    - "NoiseInjection"
-    - "RandomRotation"
-    - "MotionBlur"
-  augmentation_probabilities_per_batch: 0.1  # 10% of the batch will have augmentations applied randomly
+  augmentation_probabilities_per_batch: 0.05  # Very light: 5% of batches
   augmentations:
     - type: "RandomHorizontalFlip"
       probability: 0.5
-    - type: "RandomCrop"
-      size: [600, 600]
-    - type: "ColorJitter"
+    - type: "ColorJitter"        # BDD100K has varying lighting conditions
       brightness: 0.2
       contrast: 0.2
       saturation: 0.2
       hue: 0.1
-    - type: "NoiseInjection"
-      mean: 0
-      std: 0.05
-      p: 0.5
-    - type: "RandomRotation"
-      degrees: 10
-      fill: "black"
-    - type: "MotionBlur"
-      kernel_size: 5
-      p: 0.3
 
 experiment:
-  name: "gai-yolov12-experiment-002"
-  description: "Experimenting with GAI-YOLOv12 on BDD100K with large config"
+  name: "gai-yolov12-large-experiment-003"
+  description: "Fine-tuning GAI-YOLOv12 on BDD100K with warmup scheduler and layer freezing"
   num_epochs: 100
-  learning_rate: 0.0001
-  weight_decay: 0.00001
-  max_batches_per_epoch: null  # Limit each epoch to 100 batches for faster testing, null for full epoch
-  checkpoint_interval: 1  # Save checkpoint every epoch
+  learning_rate: 0.0001          # Increased from 1e-5 for better convergence
+  weight_decay: 0.001
+  
+  # Learning rate scheduler with warmup (recommended for fine-tuning)
+  scheduler: "cosine_warmup"
+  scheduler_params:
+    warmup_epochs: 5             # Gentle warmup for 5 epochs
+    warmup_bias_lr: 0.01         # Start at 1% of target LR
+    eta_min: 0.000001            # End at 1e-6 (10% of initial)
+  
+  max_batches_per_epoch: null
+  checkpoint_interval: 2
   gradient_clip_norm: 10.0
   log_interval: 10
-  use_amp: true  # Enable Automatic Mixed Precision (AMP) for faster training with lower memory
+  use_amp: true
   tensorboard:
     enabled: true
     log_interval: 10
@@ -81,4 +80,4 @@ experiment:
     enabled: true
     eval_interval: 5  # Evaluate COCO metrics every 5 epochs
     eval_on_validation: true
-    visualization_conf_threshold: 0.1  # Confidence threshold for showing predictions (0.01-1.0)
+    visualization_conf_threshold: 0.5  # Confidence threshold for showing predictions (0.01-1.0)

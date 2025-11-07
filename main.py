@@ -12,6 +12,8 @@ import sys
 import time
 from pathlib import Path
 
+import torch.multiprocessing as mp
+
 from train import run_training
 from utils.converter import run_conversion
 from utils.utils import load_yaml_config
@@ -141,6 +143,15 @@ Examples:
 def main() -> None:
     args = parse_args()
     _setup_logging(args.log_level)
+
+    # Prefer file-backed tensor sharing to reduce POSIX shared memory usage.
+    try:
+        mp.set_sharing_strategy("file_system")
+    except RuntimeError as exc:  # pragma: no cover - depends on platform
+        logging.getLogger(__name__).warning(
+            "Failed to set multiprocessing sharing strategy to 'file_system': %s",
+            exc,
+        )
     
     # Handle TensorBoard server mode
     if args.tensorboard:

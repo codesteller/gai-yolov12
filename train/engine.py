@@ -121,6 +121,13 @@ class TrainerConfig:
     max_batches_per_epoch: Optional[int] = None
     visualization_conf_threshold: float = 0.01  # Confidence threshold for visualization
     use_amp: bool = False  # Enable Automatic Mixed Precision training
+    
+    # Fine-tuning and layer freezing parameters
+    freeze_backbone: bool = False  # Freeze backbone layers
+    freeze_neck: bool = False  # Freeze neck/FPN layers
+    freeze_until_epoch: Optional[int] = None  # Unfreeze all layers after this epoch
+    backbone_lr_multiplier: float = 1.0  # LR multiplier for backbone (e.g., 0.1 for 10x slower)
+    neck_lr_multiplier: float = 1.0  # LR multiplier for neck (e.g., 0.5 for 2x slower)
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "TrainerConfig":
@@ -165,6 +172,15 @@ class TrainerConfig:
         # Parse AMP (Automatic Mixed Precision) setting
         use_amp = bool(experiment_cfg.get("use_amp", False))
         
+        # Parse fine-tuning / layer freezing configuration
+        model_cfg = config.get("model", {})
+        freeze_backbone = bool(model_cfg.get("freeze_backbone", False))
+        freeze_neck = bool(model_cfg.get("freeze_neck", False))
+        freeze_until = model_cfg.get("freeze_until_epoch")
+        freeze_until_epoch = int(freeze_until) if freeze_until is not None else None
+        backbone_lr_mult = float(model_cfg.get("backbone_lr_multiplier", 1.0))
+        neck_lr_mult = float(model_cfg.get("neck_lr_multiplier", 1.0))
+        
         return cls(
             num_epochs=int(experiment_cfg.get("num_epochs", 1)),
             learning_rate=float(experiment_cfg.get("learning_rate", 1e-3)),
@@ -191,6 +207,11 @@ class TrainerConfig:
             max_batches_per_epoch=max_batches_per_epoch,
             visualization_conf_threshold=max(0.001, min(1.0, visualization_conf_threshold)),
             use_amp=use_amp,
+            freeze_backbone=freeze_backbone,
+            freeze_neck=freeze_neck,
+            freeze_until_epoch=freeze_until_epoch,
+            backbone_lr_multiplier=backbone_lr_mult,
+            neck_lr_multiplier=neck_lr_mult,
         )
 
     def resolve_device(self) -> torch.device:
@@ -396,7 +417,13 @@ class Trainer:
         self.model = model_bundle.model.to(self.device)
         self.loss_fn = model_bundle.loss.to(self.device)
         self.dataloaders = dataloaders
-        self.optimizer = _build_optimizer(self.model.parameters(), config)
+        
+        # Apply layer freezing if configured
+        if config.freeze_backbone or config.freeze_neck:
+            self._freeze_layers(config.freeze_backbone, config.freeze_neck)
+        
+        # Build optimizer with discriminative learning rates
+        self.optimizer = _build_optimizer_with_param_groups(self.model, config)
         self.scheduler = _build_scheduler(self.optimizer, config)
         assigner_params = dict(config.assigner_params)
         positive_thr = float(assigner_params.get("positive_iou_threshold", 0.0))
@@ -447,6 +474,11 @@ class Trainer:
             start_epoch, metrics, checkpoint_paths = self._resume_from_checkpoint()
 
         for epoch in range(start_epoch, self.config.num_epochs + 1):
+            # Check if we should unfreeze layers
+            if (self.config.freeze_until_epoch is not None and 
+                epoch == self.config.freeze_until_epoch):
+                self._unfreeze_all_layers()
+            
             train_loss = self._train_epoch(train_loader, epoch)
             val_loss = self._validate_epoch(epoch)
             
@@ -490,6 +522,59 @@ class Trainer:
             LOGGER.info("TensorBoard logging completed")
 
         return TrainingResult(metrics=metrics, checkpoints=checkpoint_paths, summary_path=summary_path)
+
+    def _freeze_layers(self, freeze_backbone: bool, freeze_neck: bool) -> None:
+        """Freeze specified layers for fine-tuning.
+        
+        Args:
+            freeze_backbone: Whether to freeze backbone parameters
+            freeze_neck: Whether to freeze neck/FPN parameters
+        """
+        frozen_params = 0
+        total_params = 0
+        
+        for name, param in self.model.named_parameters():
+            total_params += param.numel()
+            
+            should_freeze = False
+            if freeze_backbone and 'backbone' in name:
+                should_freeze = True
+            if freeze_neck and ('neck' in name or 'fpn' in name.lower()):
+                should_freeze = True
+            
+            if should_freeze:
+                param.requires_grad = False
+                frozen_params += param.numel()
+        
+        LOGGER.info(
+            "Layer freezing applied: %d / %d parameters frozen (%.1f%%)",
+            frozen_params, total_params, 100.0 * frozen_params / total_params
+        )
+        
+        if freeze_backbone:
+            LOGGER.info("  - Backbone layers FROZEN")
+        if freeze_neck:
+            LOGGER.info("  - Neck/FPN layers FROZEN")
+    
+    def _unfreeze_all_layers(self) -> None:
+        """Unfreeze all model parameters."""
+        unfrozen_params = 0
+        
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                param.requires_grad = True
+                unfrozen_params += param.numel()
+        
+        if unfrozen_params > 0:
+            LOGGER.info(
+                "Unfroze all layers: %d parameters now trainable",
+                unfrozen_params
+            )
+            # Rebuild optimizer to include newly unfrozen parameters
+            self.optimizer = _build_optimizer_with_param_groups(self.model, self.config)
+            # Rebuild scheduler with new optimizer
+            self.scheduler = _build_scheduler(self.optimizer, self.config)
+            LOGGER.info("Optimizer and scheduler rebuilt with unfrozen parameters")
 
     def _train_epoch(self, loader: DataLoader, epoch: int) -> float:
         self.model.train()
@@ -1381,7 +1466,178 @@ class Trainer:
             }
 
 
+class WarmupWrapper:
+    """Wraps any PyTorch scheduler with a linear warmup phase.
+    
+    During warmup epochs, learning rate linearly increases from 
+    warmup_bias_lr * base_lr to base_lr. After warmup, delegates to base_scheduler.
+    """
+    
+    def __init__(
+        self, 
+        optimizer: torch.optim.Optimizer,
+        warmup_epochs: int,
+        base_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+        warmup_bias_lr: float = 0.1
+    ):
+        self.optimizer = optimizer
+        self.warmup_epochs = warmup_epochs
+        self.base_scheduler = base_scheduler
+        self.warmup_bias_lr = warmup_bias_lr
+        self.current_epoch = 0
+        
+        # Store initial LR for each param group
+        self.base_lrs = [group['lr'] for group in optimizer.param_groups]
+        
+    def step(self, epoch: Optional[int] = None):
+        """Step the scheduler. Call once per epoch."""
+        if epoch is not None:
+            self.current_epoch = epoch
+            
+        if self.current_epoch < self.warmup_epochs:
+            # Linear warmup phase
+            warmup_progress = self.current_epoch / self.warmup_epochs
+            lr_scale = self.warmup_bias_lr + (1.0 - self.warmup_bias_lr) * warmup_progress
+            
+            for param_group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
+                param_group['lr'] = base_lr * lr_scale
+        else:
+            # Warmup complete, use base scheduler
+            if self.base_scheduler is not None:
+                self.base_scheduler.step()
+                
+        self.current_epoch += 1
+    
+    def get_last_lr(self):
+        """Return last computed learning rate."""
+        if self.current_epoch < self.warmup_epochs:
+            warmup_progress = self.current_epoch / self.warmup_epochs
+            lr_scale = self.warmup_bias_lr + (1.0 - self.warmup_bias_lr) * warmup_progress
+            return [base_lr * lr_scale for base_lr in self.base_lrs]
+        elif self.base_scheduler is not None:
+            return self.base_scheduler.get_last_lr()
+        else:
+            return [group['lr'] for group in self.optimizer.param_groups]
+    
+    def state_dict(self):
+        """Return state dict for checkpointing."""
+        state = {
+            'warmup_epochs': self.warmup_epochs,
+            'warmup_bias_lr': self.warmup_bias_lr,
+            'current_epoch': self.current_epoch,
+            'base_lrs': self.base_lrs,
+        }
+        if self.base_scheduler is not None:
+            state['base_scheduler'] = self.base_scheduler.state_dict()
+        return state
+    
+    def load_state_dict(self, state_dict):
+        """Load state dict from checkpoint."""
+        self.warmup_epochs = state_dict['warmup_epochs']
+        self.warmup_bias_lr = state_dict['warmup_bias_lr']
+        self.current_epoch = state_dict['current_epoch']
+        self.base_lrs = state_dict['base_lrs']
+        if self.base_scheduler is not None and 'base_scheduler' in state_dict:
+            self.base_scheduler.load_state_dict(state_dict['base_scheduler'])
+
+
+def _build_optimizer_with_param_groups(model: nn.Module, config: TrainerConfig) -> torch.optim.Optimizer:
+    """Build optimizer with discriminative learning rates for different model parts.
+    
+    Separate parameter groups for:
+    - Backbone: base_lr * backbone_lr_multiplier
+    - Neck/FPN: base_lr * neck_lr_multiplier (if applicable)
+    - Head: base_lr (full learning rate)
+    """
+    # Check if discriminative LR is needed
+    use_discriminative_lr = (
+        config.backbone_lr_multiplier != 1.0 or 
+        config.neck_lr_multiplier != 1.0
+    )
+    
+    if not use_discriminative_lr:
+        # Standard single LR for all parameters
+        return _build_optimizer(model.parameters(), config)
+    
+    # Separate parameters by model part
+    backbone_params = []
+    neck_params = []
+    head_params = []
+    other_params = []
+    
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+            
+        if 'backbone' in name:
+            backbone_params.append(param)
+        elif 'neck' in name or 'fpn' in name.lower():
+            neck_params.append(param)
+        elif 'head' in name:
+            head_params.append(param)
+        else:
+            other_params.append(param)
+    
+    # Build parameter groups with different LRs
+    param_groups = []
+    
+    if backbone_params:
+        param_groups.append({
+            'params': backbone_params,
+            'lr': config.learning_rate * config.backbone_lr_multiplier,
+            'name': 'backbone'
+        })
+        LOGGER.info(
+            "Backbone: %d params, LR=%.2e (%.1fx base)",
+            sum(p.numel() for p in backbone_params),
+            config.learning_rate * config.backbone_lr_multiplier,
+            config.backbone_lr_multiplier
+        )
+    
+    if neck_params:
+        param_groups.append({
+            'params': neck_params,
+            'lr': config.learning_rate * config.neck_lr_multiplier,
+            'name': 'neck'
+        })
+        LOGGER.info(
+            "Neck: %d params, LR=%.2e (%.1fx base)",
+            sum(p.numel() for p in neck_params),
+            config.learning_rate * config.neck_lr_multiplier,
+            config.neck_lr_multiplier
+        )
+    
+    if head_params:
+        param_groups.append({
+            'params': head_params,
+            'lr': config.learning_rate,
+            'name': 'head'
+        })
+        LOGGER.info(
+            "Head: %d params, LR=%.2e (1.0x base)",
+            sum(p.numel() for p in head_params),
+            config.learning_rate
+        )
+    
+    if other_params:
+        param_groups.append({
+            'params': other_params,
+            'lr': config.learning_rate,
+            'name': 'other'
+        })
+    
+    # Create optimizer with parameter groups
+    optimizer_name = config.optimizer.lower()
+    if optimizer_name == "adamw":
+        return torch.optim.AdamW(param_groups, weight_decay=config.weight_decay)
+    elif optimizer_name == "sgd":
+        return torch.optim.SGD(param_groups, momentum=0.9, weight_decay=config.weight_decay)
+    else:
+        raise ValueError(f"Unsupported optimizer '{config.optimizer}'")
+
+
 def _build_optimizer(parameters: Iterable[torch.Tensor], config: TrainerConfig) -> torch.optim.Optimizer:
+    """Build optimizer with single learning rate for all parameters."""
     name = config.optimizer.lower()
     if name == "adamw":
         return torch.optim.AdamW(parameters, lr=config.learning_rate, weight_decay=config.weight_decay)
@@ -1391,19 +1647,104 @@ def _build_optimizer(parameters: Iterable[torch.Tensor], config: TrainerConfig) 
 
 
 def _build_scheduler(optimizer: torch.optim.Optimizer, config: TrainerConfig) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
+    """Build learning rate scheduler with optional warmup support.
+    
+    Supports: linear, cosine_warmup, onecycle, polynomial, steplr, cosineannealing
+    All schedulers (except onecycle) support warmup via warmup_epochs parameter.
+    """
     if config.scheduler is None:
         return None
+        
     name = str(config.scheduler).lower()
     params = dict(config.scheduler_params)
-    if name == "steplr":
-        step_size = int(params.get("step_size", max(1, config.num_epochs // 3)))
-        gamma = float(params.get("gamma", 0.1))
-        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
-    if name == "cosineannealing":
-        t_max = int(params.get("t_max", config.num_epochs))
+    warmup_epochs = int(params.get("warmup_epochs", 0))
+    warmup_bias_lr = float(params.get("warmup_bias_lr", 0.1))
+    
+    # Calculate effective epochs for base scheduler (exclude warmup)
+    effective_epochs = max(1, config.num_epochs - warmup_epochs)
+    
+    base_scheduler = None
+    
+    # Linear scheduler (YOLOv5/v8 style)
+    if name in ["linear", "linear_warmup"]:
+        final_factor = float(params.get("final_lr_factor", 0.01))
+        base_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer, 
+            start_factor=1.0, 
+            end_factor=final_factor, 
+            total_iters=effective_epochs
+        )
+    
+    # Cosine with warmup (recommended for fine-tuning)
+    elif name in ["cosine", "cosine_warmup", "cosineannealing"]:
         eta_min = float(params.get("eta_min", 0.0))
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
-    raise ValueError(f"Unsupported scheduler '{config.scheduler}'")
+        base_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, 
+            T_max=effective_epochs, 
+            eta_min=eta_min
+        )
+    
+    # OneCycle (handles its own warmup)
+    elif name == "onecycle":
+        max_lr = float(params.get("max_lr", config.learning_rate * 10))
+        pct_start = float(params.get("pct_start", 0.3))
+        anneal_strategy = params.get("anneal_strategy", "cos")
+        return torch.optim.lr_scheduler.OneCycleLR(
+            optimizer, 
+            max_lr=max_lr, 
+            total_steps=config.num_epochs,
+            pct_start=pct_start,
+            anneal_strategy=anneal_strategy
+        )
+    
+    # Polynomial decay
+    elif name == "polynomial":
+        power = float(params.get("power", 1.0))
+        base_scheduler = torch.optim.lr_scheduler.PolynomialLR(
+            optimizer,
+            total_iters=effective_epochs,
+            power=power
+        )
+    
+    # StepLR (legacy support)
+    elif name == "steplr":
+        step_size = int(params.get("step_size", max(1, effective_epochs // 3)))
+        gamma = float(params.get("gamma", 0.1))
+        base_scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, 
+            step_size=step_size, 
+            gamma=gamma
+        )
+    
+    # Cosine with warm restarts
+    elif name in ["cosine_restarts", "cosinewarmrestarts"]:
+        T_0 = int(params.get("T_0", 10))
+        T_mult = int(params.get("T_mult", 2))
+        eta_min = float(params.get("eta_min", 0.0))
+        base_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=T_0,
+            T_mult=T_mult,
+            eta_min=eta_min
+        )
+    
+    else:
+        raise ValueError(f"Unsupported scheduler '{config.scheduler}'")
+    
+    # Wrap with warmup if requested (and not OneCycle which handles its own)
+    if warmup_epochs > 0 and name != "onecycle":
+        LOGGER.info(
+            "Wrapping %s scheduler with %d warmup epochs (bias_lr=%.2f)",
+            name, warmup_epochs, warmup_bias_lr
+        )
+        return WarmupWrapper(
+            optimizer, 
+            warmup_epochs=warmup_epochs,
+            base_scheduler=base_scheduler,
+            warmup_bias_lr=warmup_bias_lr
+        )
+    
+    return base_scheduler
 
 
 def run_training(config: Dict[str, Any], resume: bool = False) -> TrainingResult:

@@ -11,7 +11,7 @@ dataset:
   export_coco_path: "/mnt/team-share/Datasets/bdd-datasets/BDD/bdd_100k/coco_format/"
 
 model:
-  name: "gai-yolo12-large"
+  name: "gai-yolo12-large-002"
   pretrained: true
   num_classes: 10
   input_size: [640, 640]
@@ -23,12 +23,12 @@ model:
     hidden_channels: 256         # Hidden layer channels in detection head (128, 256, 512)
 
 dataloader:
-  batch_size: 96
+  batch_size: 128
   num_workers: 20
   prefetch_factor: 4
   persistent_workers: false
   pin_memory: true
-  augmentation: true
+  augmentation: false
   augmentation_strategies:
     - "RandomHorizontalFlip"
     - "RandomCrop"
@@ -59,13 +59,13 @@ dataloader:
       p: 0.3
 
 experiment:
-  name: "gai-yolov12-experiment-002"
+  name: "gai-yolov12-large-experiment-002"
   description: "Experimenting with GAI-YOLOv12 on BDD100K with large config"
   num_epochs: 100
-  learning_rate: 0.0001
-  weight_decay: 0.00001
+  learning_rate: 0.00001
+  weight_decay: 0.001
   max_batches_per_epoch: null  # Limit each epoch to 100 batches for faster testing, null for full epoch
-  checkpoint_interval: 1  # Save checkpoint every epoch
+  checkpoint_interval: 2  # Save checkpoint every epoch
   gradient_clip_norm: 10.0
   log_interval: 10
   use_amp: true  # Enable Automatic Mixed Precision (AMP) for faster training with lower memory
